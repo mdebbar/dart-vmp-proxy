@@ -1,0 +1,18 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Dart",
+      "program": "lib/standalone.dart",
+      "request": "launch",
+      "type": "dart",
+      "args": [
+        "5858",
+        "http://mdebbar.mtv.corp.google.com:8081/third_party/dart/butterfly/examples/gallery/web/index.ddc.html"
+      ]
+    }
+  ]
+}
