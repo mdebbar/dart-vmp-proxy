@@ -1,4 +1,7 @@
+import 'package:webkit_inspection_protocol/webkit_inspection_protocol.dart';
+
 import 'core.dart';
+import 'enums.dart';
 
 abstract class IRequestToResponse {
   ServiceProtocolResponse toResponse(ServiceProtocolRequest request);
@@ -68,14 +71,17 @@ class Isolate extends Response implements IRefable {
     this.number,
     this.name,
     this.runnable = true,
-    this.pauseEvent,
-  }) : super('Isolate');
+    this.wip,
+  }) : super('Isolate') {
+    pauseEvent = Event(kind: EventKind.Resume, isolate: this);
+  }
 
   final String id;
   final String number;
   final String name;
   final bool runnable;
   Event pauseEvent;
+  WipConnection wip;
 
   @override
   Map<String, dynamic> toResult() {

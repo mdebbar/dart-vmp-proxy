@@ -3,17 +3,18 @@ import 'dart:convert';
 
 import 'package:webkit_inspection_protocol/webkit_inspection_protocol.dart';
 
+import 'cdp.dart';
 import 'enums.dart';
 import 'types.dart';
 
 typedef SendEvent = void Function(ServiceProtocolEvent event);
 
 class ProxyCore {
-  ProxyCore(this.wip, this.sendEvent) {
+  ProxyCore(this.chrome, this.sendEvent) {
     populateIsolates();
   }
 
-  final WipConnection wip;
+  final ChromeConnection chrome;
   final SendEvent sendEvent;
 
   final version = Version(major: 3, minor: 5);
@@ -41,6 +42,8 @@ class ProxyCore {
         return _getVM(request);
       case RequestMethod.getIsolate:
         return _getIsolate(request);
+      case RequestMethod.setExceptionPauseMode:
+        return _setExceptionPauseMode(request);
       case RequestMethod.streamListen:
         return _streamListen(request);
       case RequestMethod.streamCancel:
@@ -57,15 +60,35 @@ class ProxyCore {
     return version.toResponse(request);
   }
 
-  ServiceProtocolResponse _getVM(ServiceProtocolRequest request) {
+  Future<ServiceProtocolResponse> _getVM(ServiceProtocolRequest request) async {
+    final dartTabs = await getDartTabs(chrome);
+    final isoaltes = await Future.wait(dartTabs.map(getIsolateFromTab));
+    vm.isolates.replaceRange(0, vm.isolates.length, isoaltes);
     return vm.toResponse(request);
   }
 
   ServiceProtocolResponse _getIsolate(ServiceProtocolRequest request) {
     final String isolateId = request.params['isolateId'];
-    // TODO(mdebbar): if the isolate isn't found, return a Sentinel.
-    final isolate = vm.isolates.firstWhere((iso) => iso.id == isolateId);
+    final isolate = findIsolateInVM(vm, isolateId);
+    if (isolate == null) {
+      // TODO(mdebbar): if the isolate isn't found, return a Sentinel.
+    }
     return isolate.toResponse(request);
+  }
+
+  Future<ServiceProtocolResponse> _setExceptionPauseMode(
+    ServiceProtocolRequest request,
+  ) async {
+    final String isolateId = request.params['isolateId'];
+    final String mode = request.params['mode']; // One of [ExceptionPauseMode].
+    final isolate = findIsolateInVM(vm, isolateId);
+    if (isolate == null) {
+      return Error(code: 105, message: 'Isolate must be runnable')
+          .toResponse(request);
+    }
+
+    await setExceptionMode(isolate.wip, mode);
+    return Success().toResponse(request);
   }
 
   ServiceProtocolResponse _streamListen(ServiceProtocolRequest request) {
@@ -78,29 +101,13 @@ class ProxyCore {
     StreamSubscription sub;
     switch (streamId) {
       case StreamId.Stdout:
-        sub = wip.runtime.onConsoleAPICalled.listen((call) {
-          if (call.args.isEmpty) return;
-          final message = call.args[0];
-          if (message.type != 'string') return;
-          sendEvent(ServiceProtocolEvent.forStream(
-            StreamId.Stdout,
-            EventMethod.streamNotify,
-            {
-              'logRecord': {
-                'message': message.value,
-              },
-            },
-          ));
-        });
+      case StreamId.Debug:
+      case StreamId.Stderr:
+      // Subscribe to the streams...
     }
 
-    if (sub != null) {
     _subscribedStreams[streamId] = sub;
     return Success().toResponse(request);
-    } else {
-      return Error(code: 100, message: 'Feature is disabled')
-          .toResponse(request);
-    }
   }
 
   ServiceProtocolResponse _streamCancel(ServiceProtocolRequest request) {
@@ -109,11 +116,31 @@ class ProxyCore {
       return Error(code: 104, message: 'Stream not subscribed')
           .toResponse(request);
     }
-    _subscribedStreams[streamId].cancel();
+    _subscribedStreams[streamId]?.cancel();
     _subscribedStreams.remove(streamId);
 
     return Success().toResponse(request);
   }
+}
+
+Isolate findIsolateInVM(VM vm, String isolateId) {
+  return vm.isolates.firstWhere((iso) => iso.id == isolateId);
+}
+
+Future<Isolate> getIsolateFromTab(ChromeTab tab) async {
+  final wip = await tab.connect();
+  final isolateId = await pollExpression(
+    wip,
+    'String(window.__DART_APP_ISOLATE_ID__ || "") || null',
+    (v) => v is String,
+  );
+  return Isolate(
+    id: 'Isolate/$isolateId',
+    number: isolateId,
+    name: tab.title,
+    runnable: true,
+    wip: wip,
+  );
 }
 
 /// Provides getters with correct types for known keys in the service protocol

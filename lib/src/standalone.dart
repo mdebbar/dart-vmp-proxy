@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:webkit_inspection_protocol/webkit_inspection_protocol.dart';
 
+import 'cdp.dart';
 import 'core.dart';
 
 const chromeDevtoolsPort = 9292;
@@ -14,9 +15,9 @@ ChromeConnection chrome;
 /// ```
 /// dart lib/standalone.dart 5858
 /// ```
-void main(List<String> args) async {
-  final vmServicePort = int.parse(args[0]);
-  final webUrl = args[1];
+void main(int vmServicePort) async {
+  final webUrl = 'http://mdebbar.mtv.corp.google.com:8081'
+      '/third_party/dart/butterfly/examples/gallery/web/index.ddc.html';
 
   // ProcessSignal.sigkill.watch().listen(sig);
   ProcessSignal.sigint.watch().listen(sig);
@@ -24,7 +25,10 @@ void main(List<String> args) async {
   ProcessSignal.sigusr2.watch().listen(sig);
 
   print('Launching Chrome :$chromeDevtoolsPort');
-  chrome = await launchChrome(debugPort: chromeDevtoolsPort);
+  chrome = await launchChrome(debugPort: chromeDevtoolsPort, url: webUrl);
+
+  // final tabs = await chrome.getTabs();
+  // print(tabs.map((t) => t.title).join('\n'));
 
   print('Launching server :$vmServicePort');
   final httpServer = await launchServer(port: vmServicePort);
@@ -50,7 +54,7 @@ Future<ChromeConnection> launchChrome({int debugPort, String url}) async {
   final args = [
     '--user-data-dir=.data_dir',
     '--remote-debugging-port=$debugPort',
-    // url,
+    url,
   ];
 
   if (Platform.isMacOS) {
@@ -86,21 +90,11 @@ Future<void> waitForPageLoad(
   WipConnection wip, [
   Duration timeout = const Duration(seconds: 10),
 ]) async {
-  final start = DateTime.now();
-  final end = start.add(timeout);
-  while (end.isAfter(DateTime.now())) {
-    try {
-      // TODO: This property should be injected by DDC to indicate that the app is loaded.
-      final result = await wip.runtime
-          .evaluate('window.hummingbird_loaded ? "yes" : null');
-      if (result.value == 'yes') {
-        return;
-      }
-    } catch (e) {
-      print(e.runtimeType);
-    }
-    await Future.delayed(Duration(milliseconds: 25));
-  }
+  return pollExpression(
+    wip,
+    'window.__DART_APP_LOADED__ ? "yes" : null',
+    (v) => v == 'yes',
+  );
 }
 
 List<ServiceProtocolServer> protocolServers = [];
@@ -134,7 +128,7 @@ class ServiceProtocolServer {
     await _wip.log.enable();
     // await experimental(_wip);
 
-    _proxy = ProxyCore(_wip, (ServiceProtocolEvent event) {
+    _proxy = ProxyCore(chrome, (ServiceProtocolEvent event) {
       print('<<< ++++++++ >>>');
       print(event.toJson());
       socket.add(event.toJson());
@@ -185,14 +179,31 @@ class ServiceProtocolServer {
   }
 
   void handleSocketMessage(ServiceProtocolRequest message) async {
-    print('\n-->>>');
-    print(message.toJson());
+    String json;
+    ServiceProtocolResponse response;
+    String responseJson;
+    try {
+      json = message.toJson();
+      response = await _proxy.processMessage(message);
+      responseJson = response.toJson();
+      socket.add(responseJson);
+    } finally {
+      if (json == null) {
+        print('**** Failed to serialize request message: $message');
+      } else {
+        print('\n-->>>');
+        print(json);
 
-    final response = await _proxy.processMessage(message);
-    print('<<<--');
-    print(response.toJson());
-
-    socket.add(response.toJson());
+        if (response == null) {
+          print('**** Failed to generate response');
+        } else if (responseJson == null) {
+          print('**** Failed to serialize response: $response');
+        } else {
+          print('<<<--');
+          print(responseJson);
+        }
+      }
+    }
   }
 
   void close() {
@@ -215,5 +226,5 @@ class ServiceProtocolServer {
 void sig(ProcessSignal signal) {
   print('Received $signal');
   protocolServers.forEach((server) => server.close());
-  // exit(1);
+  exit(1);
 }
